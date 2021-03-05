@@ -81,6 +81,7 @@ camera_status_t camera_group_t::start_repeat(
         ACameraCaptureSession_stateCallbacks& on_session_changed,
         ACameraCaptureSession_captureCallbacks& on_capture_event) noexcept {
     camera_status_t status = ACAMERA_OK;
+
     if (imageReaderWindow.handle == nullptr)
     {
         imageReader.getWindow(imageReaderWindow);
