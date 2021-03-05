@@ -237,8 +237,22 @@ struct CameraDevice
 struct HardwareBuffer
 {
     using Desc = AHardwareBuffer_Desc;
+    using Plane = AHardwareBuffer_Plane;
+    using Planes = AHardwareBuffer_Planes;
+
     AHardwareBuffer * handle = nullptr;
     void * imageArray = nullptr;
+
+    inline HardwareBuffer() = default;
+
+    inline HardwareBuffer(const Desc & desc)
+    {
+        int result = AHardwareBuffer_allocate(&desc, std::addressof(this->handle));
+        if (result != 0)
+        {
+            Logger::logError(128, "%s can't allocate buffer: %d", __FUNCTION__ , result);
+        }
+    }
 
     inline void acquireAndLock()
     {
@@ -261,6 +275,17 @@ struct HardwareBuffer
     {
         Desc retval;
         AHardwareBuffer_describe(this->handle, std::addressof(retval));
+        return retval;
+    }
+
+    inline Planes lockPlanes(ARect * rect)
+    {
+        Planes retval{};
+        int result = AHardwareBuffer_lockPlanes(this->handle, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, rect, &retval);
+        if (result != 0)
+        {
+            Logger::logError(128, "%s can't lock planes: %d", __FUNCTION__ , result);
+        }
         return retval;
     }
 };
@@ -296,6 +321,11 @@ struct Image
     inline media_status_t getPlaneData(int planeIdx, uint8_t ** data, int32_t * dataLength)
     {
         return AImage_getPlaneData(this->handle.get(), planeIdx, data, dataLength);
+    }
+
+    inline media_status_t getPlaneRowStride(int planeIdx, int32_t * rowStride)
+    {
+        return AImage_getPlaneRowStride(this->handle.get(), planeIdx, rowStride);
     }
 };
 
@@ -453,6 +483,10 @@ private:
 
     void run2();
     void run3();
+
+    void run4();
+
+    void run5();
 };
 
 struct ImageReader
@@ -474,7 +508,7 @@ struct ImageReader
 
     inline ImageReader(): queue(2)
     {
-        auto status = AImageReader_new(4000, 3000, AIMAGE_FORMAT_YUV_420_888, 8, std::addressof(this->handle));
+        auto status = AImageReader_new(4000, 3000, AIMAGE_FORMAT_YUV_420_888, 3, std::addressof(this->handle));
         assert(status == AMEDIA_OK);
         sensorManager = SensorManager::getInstanceForPackage();
 
