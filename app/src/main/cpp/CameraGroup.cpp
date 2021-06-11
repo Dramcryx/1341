@@ -82,6 +82,8 @@ camera_status_t camera_group_t::start_repeat(
         ACameraCaptureSession_captureCallbacks& on_capture_event) noexcept {
     camera_status_t status = ACAMERA_OK;
 
+    ANativeWindow_setBuffersDataSpace(window, ADATASPACE_BT2020);
+
     if (imageReaderWindow.handle == nullptr)
     {
         imageReader.getWindow(imageReaderWindow);
@@ -96,11 +98,11 @@ camera_status_t camera_group_t::start_repeat(
     // `ACaptureRequest` == how to capture
     auto request = device.createCaptureRequest(TEMPLATE_RECORD);
     Logger::cs(request->setTargetFpsRange(60, 60));
-    Logger::cs(request->setNoiseReductionMode(ACAMERA_NOISE_REDUCTION_MODE_OFF));
+    Logger::cs(request->setNoiseReductionMode(ACAMERA_NOISE_REDUCTION_MODE_HIGH_QUALITY));
     Logger::cs(request->setAFMode(ACAMERA_CONTROL_AF_MODE_CONTINUOUS_VIDEO));
-    Logger::cs(request->setTonemapMode(ACAMERA_TONEMAP_MODE_FAST));
-//    uint8_t aaa = ACAMERA_TONEMAP_PRESET_CURVE_SRGB;
-//    ACaptureRequest_setEntry_u8(request->handle, ACAMERA_TONEMAP_MODE_PRESET_CURVE, 1, &aaa);
+    Logger::cs(request->setTonemapMode(ACAMERA_TONEMAP_MODE_PRESET_CURVE));
+    uint8_t aaa = ACAMERA_TONEMAP_PRESET_CURVE_SRGB;
+    ACaptureRequest_setEntry_u8(request->handle, ACAMERA_TONEMAP_MODE_PRESET_CURVE, 1, &aaa);
 //    // designate target surface in request
     //auto target = wrappers::CameraOutputTarget{window};
     auto target2 = wrappers::CameraOutputTarget{imageReaderWindow.handle};

@@ -19,19 +19,21 @@
 // Android
 #include <android/native_window_jni.h>
 #include <camera/NdkCameraMetadataTags.h>
-#include <camera/NdkCaptureRequest.h>
 #include <camera/NdkCameraCaptureSession.h>
 #include <camera/NdkCameraDevice.h>
 #include <media/NdkImage.h>
 #include <media/NdkImageReader.h>
 #include <android/imagedecoder.h>
-#include <android/looper.h>
-#include <android/sensor.h>
 
 #include "Logger.h"
+#include "StabilizationManager.h"
 
 #include "libyuv/include/libyuv.h"
-#include "CL/opencl.h"
+#include "wrappers/camera/CaptureRequest.h"
+#include "wrappers/camera/CameraOutputTarget.h"
+#include "wrappers/sensor/Sensor.h"
+#include "wrappers/sensor/SensorManager.h"
+#include "wrappers/Looper.h"
 
 namespace wrappers
 {
@@ -51,72 +53,6 @@ struct NativeWindow
     }
 };
 
-struct CaptureRequest
-{
-    ACaptureRequest * handle = nullptr;
-
-    std::vector<ACameraOutputTarget*> targets;
-
-    inline camera_status_t setTargetFpsRange(int from, int to)
-    {
-        const int range[2] = {from, to};
-        return ACaptureRequest_setEntry_i32(this->handle, ACAMERA_CONTROL_AE_TARGET_FPS_RANGE, 2, range);
-    }
-
-    inline camera_status_t setNoiseReductionMode(acamera_metadata_enum_acamera_noise_reduction_mode mode)
-    {
-        const uint8_t downcast = mode;
-        return ACaptureRequest_setEntry_u8(this->handle, ACAMERA_NOISE_REDUCTION_MODE, 1, &downcast);
-    }
-
-    inline camera_status_t setAFMode(acamera_metadata_enum_acamera_control_af_mode mode)
-    {
-        const uint8_t downcast = mode;
-        return ACaptureRequest_setEntry_u8(this->handle, ACAMERA_CONTROL_AF_MODE, 1, &downcast);
-    }
-
-    inline camera_status_t setTonemapMode(acamera_metadata_enum_acamera_tonemap_mode mode)
-    {
-        const uint8_t downcast = mode;
-        return ACaptureRequest_setEntry_u8(this->handle, ACAMERA_TONEMAP_MODE, 1, &downcast);
-    }
-
-    inline camera_status_t addTarget(ACameraOutputTarget * output)
-    {
-        auto result = ACaptureRequest_addTarget(this->handle, output);
-        if (result == ACAMERA_OK)
-        {
-            targets.push_back(output);
-        }
-        return result;
-    }
-
-    inline ~CaptureRequest()
-    {
-        for (auto i: targets)
-        {
-            ACaptureRequest_removeTarget(this->handle, i);
-        }
-        ACaptureRequest_free(handle);
-    }
-};
-
-struct CameraOutputTarget
-{
-    ACameraOutputTarget * handle = nullptr;
-    inline CameraOutputTarget(ANativeWindow * window)
-    {
-        auto status = ACameraOutputTarget_create(window, std::addressof(this->handle));
-        assert(status == ACAMERA_OK);
-    }
-
-    inline ~CameraOutputTarget()
-    {
-        ACameraOutputTarget_free(this->handle);
-    }
-
-};
-
 struct CaptureSessionOutput
 {
     ACaptureSessionOutput * handle = nullptr;
@@ -129,45 +65,6 @@ struct CaptureSessionOutput
     inline ~CaptureSessionOutput()
     {
         ACaptureSessionOutput_free(this->handle);
-    }
-};
-
-struct CaptureSessionSharedOutput
-{
-    ACaptureSessionOutput * handle = nullptr;
-    std::unordered_set<ANativeWindow *> outputs;
-    inline CaptureSessionSharedOutput(ANativeWindow * window)
-    {
-        auto status = ACaptureSessionSharedOutput_create(window, std::addressof(this->handle));
-    }
-
-    inline ~CaptureSessionSharedOutput()
-    {
-        for (auto i: outputs)
-        {
-            ACaptureSessionSharedOutput_remove(this->handle, i);
-        }
-        ACaptureSessionOutput_free(this->handle);
-    }
-
-    inline camera_status_t add(ANativeWindow * target)
-    {
-        auto status = ACaptureSessionSharedOutput_add(this->handle, target);
-        if (status == ACAMERA_OK)
-        {
-            outputs.insert(target);
-        }
-        return status;
-    }
-
-    inline camera_status_t remove(ANativeWindow * target)
-    {
-        auto status = ACaptureSessionSharedOutput_remove(this->handle, target);
-        if (status == ACAMERA_OK)
-        {
-            outputs.erase(target);
-        }
-        return status;
     }
 };
 
@@ -257,10 +154,20 @@ struct HardwareBuffer
     inline void acquireAndLock()
     {
         AHardwareBuffer_acquire(this->handle);
-//        ARect rect{36000008, 1};
         ARect rect{0, 0, 4000, 3000};
-//        ARect rect{0, 0, 5008*3000, 0};
         assert(0 == AHardwareBuffer_lock(this->handle, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN, -1, &rect, std::addressof(imageArray)));
+    }
+
+    inline void * acquireAndLock(ARect * rect)
+    {
+        AHardwareBuffer_acquire(this->handle);
+        assert(0 == AHardwareBuffer_lock(this->handle, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN, -1, rect, std::addressof(imageArray)));
+        return this->imageArray;
+    }
+
+    inline void unlock()
+    {
+        AHardwareBuffer_unlock(this->handle, nullptr);
     }
 
     inline ~HardwareBuffer()
@@ -329,120 +236,20 @@ struct Image
     }
 };
 
-struct Looper
-{
-    ALooper * handle = nullptr;
-
-    inline Looper()
-    {
-        handle = ALooper_prepare(ALOOPER_PREPARE_ALLOW_NON_CALLBACKS);
-    }
-
-    inline ~Looper()
-    {
-        ALooper_release(handle);
-    }
-
-    static int pollAll(int timeoutMillis, int *outFd, int *outEvents, void **outData)
-    {
-        return ALooper_pollAll(timeoutMillis, outFd, outEvents, outData);
-    }
-
-    static int pollOnce(int timeoutMillis, int *outFd, int *outEvents, void **outData)
-    {
-        return ALooper_pollOnce(timeoutMillis, outFd, outEvents, outData);
-    }
-};
-
-struct Sensor
-{
-    const ASensor * handle = nullptr;
-    operator const ASensor *()
-    {
-        return handle;
-    }
-
-    operator ASensor *()
-    {
-        return const_cast<ASensor*>(handle);
-    }
-
-    const char * getName() const
-    {
-        return ASensor_getName(handle);
-    }
-
-    float getResolution()
-    {
-        return ASensor_getResolution(handle);
-    }
-
-};
-
-struct SensorManager {
-
-    // SUBCLASS DECLARATIONS
-    struct SensorList
-    {
-        ASensorList list;
-        int count;
-    };
-
-    struct SensorEventQueue {
-        ASensorEventQueue *handle = nullptr;
-
-        std::vector<ASensor *> enabledSensors;
-
-        inline ~SensorEventQueue() {
-            for (auto i: enabledSensors) {
-                ASensorEventQueue_disableSensor(handle, i);
-            }
-        }
-
-        int enableSensor(ASensor *sensor) {
-            int ret = ASensorEventQueue_enableSensor(handle, sensor);
-            if (!ret) {
-                enabledSensors.push_back(sensor);
-            }
-            return ret;
-        }
-    };
-    // SUBCLASS DECLARATIONS END
-
-    ASensorManager * handle = nullptr;
-
-    static SensorManager getInstanceForPackage()
-    {
-        return {ASensorManager_getInstanceForPackage("com.dramcryx.cam1341")};
-    }
-
-    SensorList getSensorList()
-    {
-        SensorList ret{};
-        ret.count = ASensorManager_getSensorList(handle, &ret.list);
-        return ret;
-    }
-
-    SensorEventQueue createEventQueue(Looper & looper, int looperId, ALooper_callbackFunc callback, void * data)
-    {
-        return {ASensorManager_createEventQueue(handle, looper.handle, looperId, callback, data)};
-    }
-
-    Sensor getDefaultSensor(int type)
-    {
-        return {ASensorManager_getDefaultSensor(handle, type)};
-    }
-
-    int destroyEventQueue(SensorEventQueue & queue)
-    {
-        return ASensorManager_destroyEventQueue(handle, std::exchange(queue.handle, nullptr));
-    }
-};
-
 class WorkersQueue
 {
 public:
     WorkersQueue(std::size_t workers = std::thread::hardware_concurrency());
+
+    void setStabInit(std::function<bool(uint8_t *, uint32_t)> cb)
+    {
+        initStab = cb;
+    }
+
+    void setGetStab(std::function<std::pair<int, int>(uint8_t *, uint32_t)> cb)
+    {
+        getStab = cb;
+    }
 
     ~WorkersQueue();
 
@@ -453,6 +260,9 @@ public:
 
         Image image;
 
+        float x;
+        float y;
+        float t;
     };
 
     void addToQueue(TaskContext &&buffer);
@@ -464,29 +274,21 @@ private:
 
     std::list<std::function<void()>> mSlaveTasks;
 
+    std::function<bool(uint8_t *, uint32_t)> initStab;
+    std::function<std::pair<int, int>(uint8_t *, uint32_t)> getStab;
+
     std::mutex mQueueProtector;
     std::atomic_bool stop = false;
     std::atomic_uint64_t currentFrame = 0;
 
     std::atomic_bool surfaceUsed;
-
-    cl_int ret = 0;
-    cl_platform_id platform_id;
-    cl_uint ret_num_platforms = 0;
-    cl_context context;
-    cl_device_id device_id;
-    cl_uint ret_num_devices = 0;
-    cl_command_queue command_queue;
-    cl_program program = nullptr;
-    cl_kernel kernel = nullptr;
     void run();
-
     void run2();
     void run3();
-
     void run4();
-
     void run5();
+
+    void run6();
 };
 
 struct ImageReader
@@ -497,26 +299,26 @@ struct ImageReader
     AImageReader * handle = nullptr;
     ImageListener imageListener;
 
-
     std::atomic_uint64_t frameCounter = 0;
-    std::unique_ptr<Looper> looper;
-    SensorManager sensorManager;
-    SensorManager::SensorEventQueue sensorEventQueue;
-    std::once_flag flg; // for looper
 
+    StabilizationManager stabilizationManager;
     WorkersQueue queue;
 
     inline ImageReader(): queue(2)
     {
-        auto status = AImageReader_new(4000, 3000, AIMAGE_FORMAT_YUV_420_888, 3, std::addressof(this->handle));
+        auto status = AImageReader_new(4000, 3000, AIMAGE_FORMAT_YUV_420_888, 10, std::addressof(this->handle));
         assert(status == AMEDIA_OK);
-        sensorManager = SensorManager::getInstanceForPackage();
 
+        queue.setStabInit([this](uint8_t * p, uint32_t stride){
+            return true;//stabilizationManager.setReferenceFrame(p, stride);
+        });
+        queue.setGetStab([this](uint8_t * p , uint32_t stride) -> std::pair<int, int> {
+            return stabilizationManager.trackFeatures(p, stride);
+        });
     }
 
     inline ~ImageReader()
     {
-        sensorManager.destroyEventQueue(sensorEventQueue);
         AImageReader_delete(this->handle);
     }
 
@@ -542,39 +344,18 @@ struct ImageReader
     inline void operator()(void * context, AImageReader* reader)
     {
         static auto time = std::chrono::high_resolution_clock::now();
+        static double x = 0.0;
+        static double y = 0.0;
         auto newtime = std::chrono::high_resolution_clock::now();
         auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(newtime - time).count();
         Logger::logError(50, "Callback time diff: %ld", diff);
         time = newtime;
 
-
-        std::call_once(flg, [this](){
-            sensorEventQueue = sensorManager.createEventQueue(*(looper = std::make_unique<Looper>()) , 1, nullptr, nullptr);
-            auto gyroscope = sensorManager.getDefaultSensor(ASENSOR_TYPE_GYROSCOPE);
-            auto accelerometer = sensorManager.getDefaultSensor(ASENSOR_TYPE_ACCELEROMETER);
-            sensorEventQueue.enableSensor(gyroscope);
-            sensorEventQueue.enableSensor(accelerometer);
-        });
-
-//        int ident = Looper::pollAll(16, nullptr, nullptr, nullptr);
-//
-//        ASensorEvent sensorEvent[2];
-//        ASensorEventQueue_getEvents(sensorEventQueue.handle, sensorEvent, 2);
-//        for (auto &i: sensorEvent)
-//        {
-//            if (i.type == ASENSOR_TYPE_ACCELEROMETER)
-//            {
-//                Logger::logInfo(128, "Accelerometer data: x %f, y %f, z %f", i.acceleration.x, i.acceleration.y, i.acceleration.z);
-//            }
-//            if (i.type == ASENSOR_TYPE_GYROSCOPE)
-//            {
-//                Logger::logInfo(128, "Gyroscope data (rad/s): x %f, y %f, z %f", i.data[0], i.data[1], i.data[2]);
-//            }
-//        }
-
         WorkersQueue::TaskContext ctx{++frameCounter, reinterpret_cast<ANativeWindow*>(context)};
-        Logger::ms(this->acquireNextImage(ctx.image));
+        ctx.t = diff;
+        Logger::logError(64, "FROM SENSOR MANAGER: x %f, y %f", ctx.x, ctx.y);
 
+        Logger::ms(this->acquireNextImage(ctx.image));
         if (ctx.image.handle) {
             queue.addToQueue(std::move(ctx));
         }

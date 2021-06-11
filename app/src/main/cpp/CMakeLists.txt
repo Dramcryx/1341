@@ -5,6 +5,8 @@
 
 cmake_minimum_required(VERSION 3.10.2)
 
+SET(CMAKE_CXX_STANDARD 17)
+
 # Declares and names the project.
 
 project("cam1341")
@@ -44,6 +46,7 @@ find_library( # Sets the name of the path variable.
 add_subdirectory(libyuv)
 include_directories( libyuv/include)
 include_directories(AFTER SYSTEM ./)
+include_directories(include)
 
 link_directories(BEFORE ./lib)
 add_library( libOpenCL.so
@@ -60,7 +63,7 @@ target_link_libraries( # Specifies the target library.
                        # Links the target library to the log library
                        # included in the NDK.
                        ${log-lib}
-                        android camera2ndk mediandk nativewindow yuv -L${CMAKE_SOURCE_DIR}/lib/ OpenCL)
+                            android camera2ndk mediandk nativewindow yuv -L${CMAKE_SOURCE_DIR}/lib/ OpenCL fastcv)
 
 
 SET(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -O2")
